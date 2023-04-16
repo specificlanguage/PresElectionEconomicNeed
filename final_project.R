@@ -1,25 +1,27 @@
 library(tidyverse)
 library(lubridate) # time
 library(sf) # maps
+library(ggrepel)
 library(broom)
 
 # Note: I didn't have to filter out Alaska since I'm working with state data.
 
-# Getting/Cleaning Data -----------------
+# Getting Data & Some Explanation  -----------------
 unemployment <- read_rds("data/unemployment_rate_by_county.rds")
 pres_election <- read_rds("data/election_data_president_2012_2020.rds")
 
 # This is a shapefile rds from lecture 22
 shp <- read_rds("data/states.rds")
+shp_county <- read_rds("data/usa_county_shapefile.rds")
 
 # This is a small file I made to convert census state codes into state abb.
 states <- read_csv("data/state_codes.csv") 
 week_17_data <- read_csv("data/pulse2020_puf_17.csv") # this may take a while.
 week_16_data <- read_csv("data/pulse2020_puf_16.csv") # this may take a while.
 
-hps_data <- rbind(week_17_data, week_16_data) # this *really* may take a while.
+hps_data <- rbind(week_17_data, week_16_data) 
 
-# There are a lot of variables in this, with 88,716 obs.
+# There are a lot of variables in this, with about 90,000 obs. each data set.
 # Data was collected during the month prior to the election (Sep 30 - Oct 26).
 
 # Important columns to note that we'll use later:
@@ -31,9 +33,17 @@ hps_data <- rbind(week_17_data, week_16_data) # this *really* may take a while.
 # EST_ST - State of residence of survey taker
 
 # There is definitely a lot more you can do with this data, but
-# this is one of the only sources I can get.
+# this is one of the sources I can get.
 
-# Of course, if this isn't enough for some states, I can get more.
+# There is a lot more data on the HPS, but I need to limit my time frame somehow!
+
+# Short Overview ------------------------
+
+# Generally, our null hypotheses say that these factors created no influence on the US election.
+# Our alternative hypotheses say that 
+
+
+
 
 # Filter data to only get stimulus responses
 # ueb = unemployment benefits received
@@ -76,15 +86,25 @@ pres_by_state <- pres_election %>% filter(year==2020) %>%
 shp <- shp %>% mutate(code = as.numeric(fips))
 states <- states %>% mutate(state_code = as.numeric(state_code))
 
-# Just a basic state graph with unemployment to gauge preliminary results
+# Just an (easy?) graph with unemployment to gauge preliminary results
 ue_by_state %>% filter(period=="Apr-20") %>% 
   left_join(shp, by="code") %>% 
   st_as_sf() %>%
   ggplot() +
   geom_sf(aes(fill=unemployment_rate), col="gray95", lwd=.1) +
   scale_fill_distiller(palette="Reds", 
-                       direction=1) +
-  theme_void()
+                       direction=1, name="Unemployment Rate") +
+  labs(title = "Unemployment Rate by State") +
+  theme_void(base_family="Arial") +
+  theme(plot.background = element_rect(fill="gray95"),
+        legend.text=element_text(size=8, color="black"),
+        legend.title = element_text(size=12, color="black", 
+                                    margin=margin(0, 5, 5,0)),
+        legend.position=c(1,0),
+        legend.direction = "horizontal",
+        legend.justification = c(1,0),
+        legend.key.height = unit(.25, "cm"),
+        legend.margin = margin(0, 5, 5, 0))
 
 # Pre-pandemic to mid-pandemic (and close to election) difference to U/E
 ue_feb <- ue_by_state %>% filter(period == "Feb-20")
@@ -102,8 +122,12 @@ states <- states %>% mutate(ue_diff.apr = ue_rate.apr - ue_rate.feb,
                             stim_received = 100*stim_by_state$pct_stimulus_recv,
                             dem_pct = 100*pres_by_state$dem_votes / pres_by_state$total_vote)
 
+
+# Just as an experiment, let's do by county data instead.
+
 pres_election <- pres_election %>% filter(!state == "AK" | !state == "DC") %>% 
-  filter(year == 2020) %>% filter(!fips %in% ue_by_county)
+  filter(year == 2020) %>% filter(fips %in% unemployment$fips == TRUE) %>% 
+  mutate(fips = as.numeric(fips))
 
 ue_by_county <- unemployment %>% 
   mutate(code = floor(as.numeric(fips) / 1000)) %>%
@@ -111,18 +135,20 @@ ue_by_county <- unemployment %>%
   filter(period == "Feb-20" | period == "Apr-20") %>%
   group_by(county, fips = as.numeric(fips)) %>% 
   summarize(ue_diff = unemployment_rate[period == "Apr-20"] - 
-              unemployment_rate[period == "Feb-20"]) #%>%
- # mutate(dem_pct = 100 * pres_election$dem_votes / pres_election$total_vote)
+              unemployment_rate[period == "Feb-20"]) %>% 
+  left_join(pres_election) %>% 
+  mutate(dem_pct = 100 * dem_votes / total_vote,
+         state_code = as.numeric(state_code))
 
 # Regression & Plots --------------------------------------------
 
-m1 <- lm(dem_pct ~ stim_received + ue_diff.apr + ue_diff.oct, data=states)
+m1 <- lm(dem_pct ~ stim_received + ue_diff.apr, data=states)
 summary(m1)
 
 m2 <- lm(dem_pct ~ stim_received, data=states)
 summary(m2)
 
-tidy(m1, conf.int = T, conf.level=.99)
+tidy(m1, conf.int = T, conf.level=.95)
 
 # Confidence intervals don't seem quite right. While the best regression is closer
 # to October, it really doesn't seem like the regression is fitting that well.
@@ -153,10 +179,10 @@ ggplot(states, aes(x=ue_diff.apr, y=dem_pct, label=state)) +
   geom_text_repel(aes(label=state), max.overlaps = 3) + 
   scale_color_manual(values = c("red", "blue"), guide=F) +
   scale_x_continuous(limits = c(0, 30)) + 
-  labs(y="Democratic Percentage (2020)", 
+  labs(y="Democratic Vote Percentage (2020)", 
        x="Difference in Unemployment Rate of Apr 2020 from Feb 2020",
        title="Difference in Unemployment Rate Affecting the US Election") +
-  theme_minimal()
+  theme_grey()
 
 ggplot(states, aes(x=ue_diff.oct, y=dem_pct, label=state)) +
   geom_smooth(method="lm", se=TRUE) + 
@@ -193,8 +219,25 @@ ggplot(states, aes(x=ue_diff.apr, y=stim_received)) +
 # After all, we are passing in state data. Just as an experiment, let's what
 # happens if we look specifically by county instead.
 
-unemployment <- unemployment %>% 
-  mutate(dem_pct = 100*pres_election$dem_votes / pres_by_state$total_vote)
+m4 <- lm(dem_pct ~ ue_diff, data = ue_by_county)
+summary(m4)
+tidy(m4, conf.int = T, conf.level=.95)
+
+# Confidence interval is kind of odd. Let's see the graphs.
+
+ggplot(ue_by_county, aes(x=ue_diff, y=dem_pct)) +
+  geom_point(aes(color=dem_pct > 50)) +
+  geom_smooth(method="lm", se=TRUE, color="darkgreen") + 
+  geom_hline(yintercept=50) +
+  labs(x = "Unemployment Rate Difference by County (from April 2020)",
+       y = "Democratic Vote Percentage",
+       title = "Unemployment Rate Affecting the Election by County") +
+  scale_y_continuous(limits = c(0, 100)) +
+  scale_color_manual(values = c("red", "blue"), guide=F) +
+  theme_grey()
+
+# Yeah no, this is just a cluster at this point. 
+# There's basically zero correlation.
 
 # Maps & Plots ----------------------------------------------------------
 
@@ -204,16 +247,17 @@ states %>%
   left_join(shp, by="state_code") %>% 
   st_as_sf() %>%
   ggplot() +
-  geom_sf(aes(fill=stim_received), col="gray95", lwd=.1) +
+  geom_sf(aes(fill=stim_received), col="black", lwd=.1) +
   scale_fill_distiller(palette="Purples", 
-                       direction=1, 
-                       name="Percentage of Workers Receiving\nUnemployment Benefits",
-                       limits=c(5, 25)) +
-  theme_void(base_family="Arial Narrow") +
-  theme(plot.background = element_rect(fill="steelblue4"),
-        legend.text=element_text(size=5, color="gray95"),
-        legend.title = element_text(size=8, color="gray95", 
-                                    margin=margin(0,0,10,0)),
+                       direction=1,
+                       name="Percentage of UB Received",
+                       limits=c(5, 25)) + 
+  labs(title = "Unemployment Benefits Received by State") + 
+  theme_void(base_family="Arial") +
+  theme(plot.background = element_rect(fill="gray95"),
+        legend.text=element_text(size=8, color="black"),
+        legend.title = element_text(size=12, color="black", 
+                                    margin=margin(0, 5, 5,0)),
         legend.position=c(1,0),
         legend.direction = "horizontal",
         legend.justification = c(1,0),
@@ -239,4 +283,23 @@ states %>% left_join(shp, by="state_code") %>% st_as_sf %>%
         legend.key.height = unit(.25, "cm"),
         legend.margin = margin(0, 5, 5, 0))
 
+# unemployment rate by county
+shp_county <- shp_county %>% 
+  filter(as.numeric(fips) %in% ue_by_county$fips) %>%
+  mutate(fips = as.numeric(fips))
 
+ue_by_county %>% left_join(shp_county) %>% st_as_sf() %>%
+  ggplot() + 
+  geom_sf(aes(fill=ue_diff), col="black", lwd=.05) + 
+  scale_fill_distiller(palette="Reds", direction = 1,
+                       name = "Unemployment Rate by County") + 
+  theme_void(base_family="serif") +
+  theme(plot.background = element_rect(fill="#a4a4a4"),
+        legend.text=element_text(size=5, color="black"),
+        legend.title = element_text(size=8, color="black", 
+                                    margin=margin(0,0,10,0)),
+        legend.position=c(1,0),
+        legend.direction = "horizontal",
+        legend.justification = c(1,0),
+        legend.key.height = unit(.25, "cm"),
+        legend.margin = margin(0, 5, 5, 0))
